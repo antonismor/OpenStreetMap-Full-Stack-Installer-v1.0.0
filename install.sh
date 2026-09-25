@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================================
 # OpenStreetMap Full Stack Installer
-# Version: 2.1.1
+# Version: 2.1.2
 # Target: Debian 13 (primary), Ubuntu Server 24.04 LTS (secondary)
 # Components:
 #   - PostgreSQL + PostGIS
@@ -27,7 +27,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="2.1.1"
+SCRIPT_VERSION="2.1.2"
 APP_NAME="OpenStreetMap Full Stack Installer"
 OSM_VERBOSE="${OSM_VERBOSE:-1}"
 
@@ -528,7 +528,7 @@ install_nominatim() {
     as_user "$NOM_USER" virtualenv "$NOM_VENV"
   fi
   as_user "$NOM_USER" "$NOM_VENV/bin/pip" install --upgrade pip wheel setuptools
-  as_user "$NOM_USER" "$NOM_VENV/bin/pip" install --upgrade nominatim-db nominatim-api falcon gunicorn uvicorn "psycopg[binary]" pyosmium
+  as_user "$NOM_USER" "$NOM_VENV/bin/pip" install --upgrade nominatim-db nominatim-api falcon gunicorn uvicorn "psycopg[binary]" osmium
 
   run mkdir -p "$NOM_PROJECT"
   run chown -R "$NOM_USER:$NOM_USER" "$NOM_PROJECT"
