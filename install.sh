@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================================
 # OpenStreetMap Full Stack Installer
-# Version: 2.1.3
+# Version: 2.1.4
 # Target: Debian 13 (primary), Ubuntu Server 24.04 LTS (secondary)
 # Components:
 #   - PostgreSQL + PostGIS
@@ -27,7 +27,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="2.1.3"
+SCRIPT_VERSION="2.1.4"
 APP_NAME="OpenStreetMap Full Stack Installer"
 OSM_VERBOSE="${OSM_VERBOSE:-1}"
 
@@ -147,7 +147,7 @@ as_user() {
   if [[ "$OSM_VERBOSE" == "1" ]]; then
     printf "%b+ sudo -u %s --%b %s\n" "$MAGENTA" "$user" "$RESET" "$(printf '%q ' "$@")"
   fi
-  sudo -u "$user" -- "$@"
+  sudo -H -u "$user" -- "$@"
 }
 
 step_bar() {
@@ -538,6 +538,25 @@ install_nominatim() {
 
   run mkdir -p "$NOM_PROJECT"
   run chown -R "$NOM_USER:$NOM_USER" "$NOM_PROJECT"
+
+  local nom_osm2pgsql
+  nom_osm2pgsql="$(command -v osm2pgsql || true)"
+  [[ -n "$nom_osm2pgsql" && -x "$nom_osm2pgsql" ]] || {
+    error "Nominatim requires an executable osm2pgsql binary."
+    return 1
+  }
+
+  # Nominatim's project directory must contain persistent configuration.
+  # Explicitly set the system osm2pgsql path. Leaving this unresolved can
+  # become Path('') == '.' in Python and fail with PermissionError on '.'.
+  cat > "$NOM_PROJECT/.env" <<EOF_NOM_ENV
+NOMINATIM_DATABASE_DSN=pgsql:dbname=nominatim
+NOMINATIM_DATABASE_WEBUSER=www-data
+NOMINATIM_OSM2PGSQL_BINARY=$nom_osm2pgsql
+NOMINATIM_IMPORT_STYLE=extratags
+EOF_NOM_ENV
+  run chown "$NOM_USER:$NOM_USER" "$NOM_PROJECT/.env"
+  run chmod 640 "$NOM_PROJECT/.env"
 
   cat > /etc/systemd/system/nominatim.socket <<'EOF_NOM_SOCKET'
 [Unit]
@@ -1528,7 +1547,27 @@ import_nominatim() {
   fi
 
   run chown -R "$NOM_USER:$NOM_USER" "$NOM_PROJECT"
-  as_user "$NOM_USER" "$NOM_VENV/bin/nominatim" import --project-dir "$NOM_PROJECT" --osm-file "$pbf"
+
+  [[ -s "$NOM_PROJECT/.env" ]] || {
+    error "Nominatim project configuration is missing: $NOM_PROJECT/.env"
+    return 1
+  }
+
+  local nom_osm2pgsql
+  nom_osm2pgsql="$(command -v osm2pgsql || true)"
+  [[ -n "$nom_osm2pgsql" && -x "$nom_osm2pgsql" ]] || {
+    error "osm2pgsql is missing or not executable."
+    return 1
+  }
+
+  grep -q "^NOMINATIM_OSM2PGSQL_BINARY=$nom_osm2pgsql$" "$NOM_PROJECT/.env" || {
+    error "Nominatim project has an invalid osm2pgsql binary setting."
+    return 1
+  }
+
+  info "Nominatim project: $NOM_PROJECT"
+  info "Nominatim osm2pgsql: $nom_osm2pgsql"
+  as_user "$NOM_USER" bash -lc "cd '$NOM_PROJECT' && '$NOM_VENV/bin/nominatim' import --project-dir '$NOM_PROJECT' --osm-file '$pbf'"
 
   # The API runs as www-data. Grant read/query access explicitly so Apache/
   # Gunicorn does not hit PostgreSQL "insufficient permissions" errors.
