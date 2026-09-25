@@ -1,0 +1,32 @@
+name: Validate install.sh
+
+on:
+  push:
+    paths:
+      - install.sh
+      - .github/workflows/validate-install.yml
+  workflow_dispatch:
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify file is complete
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(wc -l < install.sh)" -gt 1500
+          grep -q 'SCRIPT_VERSION="2.1.0"' install.sh
+          grep -q 'full_greece_deployment()' install.sh
+          grep -q 'install_telemetry()' install.sh
+
+      - name: Bash syntax
+        shell: bash
+        run: bash -n install.sh
+
+      - name: Debian 13 Bash syntax
+        shell: bash
+        run: |
+          docker run --rm -v "$PWD:/repo:ro" debian:13 bash -n /repo/install.sh
