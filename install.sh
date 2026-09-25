@@ -1186,12 +1186,142 @@ download_all_countries() {
 
 download_greece_dataset() {
   refresh_geofabrik_index
+
   local idx="$REFRESHED_INDEX"
   local row name iso parent id url updates slug out
+
   row=$(country_rows "$idx" | awk -F'\t' '$2 ~ /(^|,)GR(,|$)/ {print; exit}')
-  [[ -n "$row" ]] || { error "Greece was not found in the Geofabrik index."; return 1; }
-  IFS=  while true; do
+  [[ -n "$row" ]] || {
+    error "Greece was not found in the Geofabrik index."
+    return 1
+  }
+
+  IFS=$'\t' read -r name iso parent id url updates <<<"$row"
+
+  slug=$(sanitize_slug "$id")
+  out="$DATA_DIR/${slug}-latest.osm.pbf"
+
+  download_url "$url" "$out"
+
+  [[ -s "$out" ]] || {
+    error "Greece PBF is missing or empty after download: $out"
+    return 1
+  }
+
+  printf '%s\t%s\t%s\t%s\t%s\n' \
+    "$name" "$slug" "$out" "$url" "$updates" \
+    > "$STATE_DIR/last-dataset.tsv"
+
+  GREECE_PBF="$out"
+  success "Greece dataset ready: $GREECE_PBF"
+}
+
+extract_city_bbox() {
+  banner
+  printf "%bCITY / CUSTOM AREA EXTRACT%b\n\n" "$BOLD$CYAN" "$RESET"
+  printf "Create a smaller .osm.pbf from an existing downloaded dataset.\n"
+  printf "Bounding box format: west,south,east,north\n\n"
+
+  local source name bbox slug out
+
+  source=$(choose_local_pbf) || return
+
+  read -rp "Area/city name: " name
+  read -rp "Bounding box: " bbox
+
+  [[ -n "$name" && -n "$bbox" ]] || {
+    warn "Area name and bounding box are required."
+    return
+  }
+
+  slug=$(sanitize_slug "$name")
+  out="$DATA_DIR/${slug}.osm.pbf"
+
+  run osmium extract \
+    --overwrite \
+    --strategy=complete_ways \
+    --bbox "$bbox" \
+    "$source" \
+    -o "$out"
+
+  [[ -s "$out" ]] || {
+    error "Custom extract was not created correctly: $out"
+    return 1
+  }
+
+  success "Custom extract created: $out"
+  pause
+}
+
+full_greece_deployment() {
+  require_root
+  load_os_release
+  ensure_dirs
+
+  TOTAL_STEPS=18
+  CURRENT_STEP=0
+
+  banner
+  hardware_report
+
+  printf "\n%bFULL GREECE DEPLOYMENT%b\n" "$BOLD$CYAN" "$RESET"
+  printf "Fresh VM deployment:\n"
+  printf "  • PostgreSQL/PostGIS\n"
+  printf "  • OpenStreetMap Carto + Mapnik\n"
+  printf "  • renderd + mod_tile + Apache backend :%s\n" "$APACHE_PORT"
+  printf "  • Nominatim\n"
+  printf "  • OSRM\n"
+  printf "  • Overpass API\n"
+  printf "  • Leaflet portal\n"
+  printf "  • Live telemetry backend\n"
+  printf "  • Greece dataset and all imports\n\n"
+
+  read -rp "Type GREECE to continue: " confirm
+  if [[ "$confirm" != "GREECE" ]]; then
+    warn "Cancelled."
+    TOTAL_STEPS=13
+    return
+  fi
+
+  install_packages
+  create_service_users
+  setup_postgres
+  install_carto
+  configure_rendering
+  install_nominatim
+  install_osrm
+  install_overpass
+  install_web_portal
+  install_telemetry
+  setup_housekeeping
+  setup_health_command
+
+  step_bar "Download Greece dataset"
+  download_greece_dataset
+
+  step_bar "Import Greece -> rendering"
+  import_render_db "$GREECE_PBF"
+
+  step_bar "Import Greece -> Nominatim"
+  import_nominatim "$GREECE_PBF"
+
+  step_bar "Import Greece -> OSRM"
+  import_osrm "$GREECE_PBF"
+
+  step_bar "Import Greece -> Overpass"
+  import_overpass "$GREECE_PBF"
+
+  finish_full_install
+
+  TOTAL_STEPS=13
+  success "Full Greece deployment completed."
+  pause
+}
+
+download_country_menu() {
+  while true; do
     local row name iso parent id url updates slug out c
+
     banner
     printf "%bCOUNTRY / REGION DOWNLOAD MANAGER%b\n\n" "$BOLD$CYAN" "$RESET"
     printf "  1) Countries only (ISO-3166 list)\n"
@@ -1201,29 +1331,63 @@ download_greece_dataset() {
     printf "  5) Download full planet PBF\n"
     printf "  6) Show downloaded datasets\n"
     printf "  0) Back\n\n"
+
     read -rp "Selection: " c
+
     case "$c" in
       1|2)
-        if [[ "$c" == "1" ]]; then select_row_interactive countries || continue; else select_row_interactive all || continue; fi
+        if [[ "$c" == "1" ]]; then
+          select_row_interactive countries || continue
+        else
+          select_row_interactive all || continue
+        fi
+
         row="$SELECTED_ROW"
         IFS=$'\t' read -r name iso parent id url updates <<<"$row"
+
         slug=$(sanitize_slug "$id")
         out="$DATA_DIR/${slug}-latest.osm.pbf"
+
         banner
         printf "%bSelected:%b %s (%s)\n" "$BOLD" "$RESET" "$name" "${iso:--}"
         printf "%bURL:%b      %s\n" "$BOLD" "$RESET" "$url"
         printf "%bUpdates:%b  %s\n" "$BOLD" "$RESET" "${updates:-not-advertised}"
         printf "%bTarget:%b   %s\n\n" "$BOLD" "$RESET" "$out"
+
         download_url "$url" "$out"
-        printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$slug" "$out" "$url" "$updates" > "$STATE_DIR/last-dataset.tsv"
+
+        printf '%s\t%s\t%s\t%s\t%s\n' \
+          "$name" "$slug" "$out" "$url" "$updates" \
+          > "$STATE_DIR/last-dataset.tsv"
+
         pause
         ;;
-      3) extract_city_bbox ;;
-      4) download_all_countries; pause ;;
-      5) download_planet; pause ;;
-      6) banner; find "$DATA_DIR" -maxdepth 1 -type f -printf '%TY-%Tm-%Td %TH:%TM  %10s  %f\n' | sort; pause ;;
-      0) return ;;
-      *) warn "Invalid selection." ;;
+      3)
+        extract_city_bbox
+        ;;
+      4)
+        download_all_countries
+        pause
+        ;;
+      5)
+        download_planet
+        pause
+        ;;
+      6)
+        banner
+        find "$DATA_DIR" \
+          -maxdepth 1 \
+          -type f \
+          -printf '%TY-%Tm-%Td %TH:%TM  %10s  %f\n' \
+          | sort
+        pause
+        ;;
+      0)
+        return
+        ;;
+      *)
+        warn "Invalid selection."
+        ;;
     esac
   done
 }
