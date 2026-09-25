@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================================
 # OpenStreetMap Full Stack Installer
-# Version: 2.1.2
+# Version: 2.1.3
 # Target: Debian 13 (primary), Ubuntu Server 24.04 LTS (secondary)
 # Components:
 #   - PostgreSQL + PostGIS
@@ -27,7 +27,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="2.1.2"
+SCRIPT_VERSION="2.1.3"
 APP_NAME="OpenStreetMap Full Stack Installer"
 OSM_VERBOSE="${OSM_VERBOSE:-1}"
 
@@ -266,7 +266,7 @@ install_packages() {
     libboost-all-dev libtbb-dev libicu-dev libprotobuf-dev protobuf-compiler \
     lua5.1 liblua5.1-0-dev lua5.4 liblua5.4-dev \
     apache2 libapache2-mod-tile renderd \
-    mapnik-utils python3-mapnik python3-psycopg2 python3-psycopg python3-yaml \
+    mapnik-utils python3-mapnik python3-psycopg2 python3-psycopg python3-yaml python3-requests \
     python3 python3-dev python3-pip python3-venv virtualenv \
     gdal-bin npm node-carto \
     postgresql postgresql-contrib postgis postgresql-postgis postgresql-postgis-scripts \
@@ -345,6 +345,7 @@ tune_postgres() {
   run sudo -u postgres psql -v ON_ERROR_STOP=1 -c "ALTER SYSTEM SET max_wal_size='4GB';"
   run sudo -u postgres psql -v ON_ERROR_STOP=1 -c "ALTER SYSTEM SET checkpoint_timeout='15min';"
   run sudo -u postgres psql -v ON_ERROR_STOP=1 -c "ALTER SYSTEM SET random_page_cost='1.1';"
+  run sudo -u postgres psql -v ON_ERROR_STOP=1 -c "ALTER SYSTEM SET jit=off;"
   run systemctl restart postgresql
 }
 
@@ -356,27 +357,32 @@ install_carto() {
     run git clone https://github.com/openstreetmap-carto/openstreetmap-carto.git "$CARTO_DIR"
   fi
 
-  # The Carto source tree is intentionally owned by the render user because
-  # the style compiler and external-data helpers run under that account.
-  # Always fix ownership BEFORE invoking git on reruns; otherwise root sees a
-  # repository owned by _renderd and Git aborts with "dubious ownership".
+  # Keep the tree owned by the rendering user. This also makes reruns safe
+  # from Git's dubious-ownership protection.
   run chown -R "$GIS_USER:$GIS_USER" "$CARTO_DIR"
 
   as_user "$GIS_USER" git -C "$CARTO_DIR" fetch --all --tags --prune
   as_user "$GIS_USER" git -C "$CARTO_DIR" checkout --detach "$CARTO_TAG"
 
-  as_user "$GIS_USER" bash -lc "cd '$CARTO_DIR' && carto project.mml > mapnik.xml"
+  [[ -f "$CARTO_DIR/openstreetmap-carto-flex.lua" ]] || {
+    error "Carto v6 flex configuration is missing: $CARTO_DIR/openstreetmap-carto-flex.lua"
+    return 1
+  }
 
-  if [[ -x "$CARTO_DIR/scripts/get-fonts.sh" ]]; then
-    as_user "$GIS_USER" bash -lc "cd '$CARTO_DIR' && ./scripts/get-fonts.sh" || warn "Font helper returned an error; continuing so the installer can finish."
+  # Carto v6 requires CartoCSS >=1.2 and Mapnik API >=3.0.22.
+  as_user "$GIS_USER" bash -lc "cd '$CARTO_DIR' && carto -a '3.0.22' project.mml > mapnik.xml"
+
+  # v6 replaced the old get-fonts.sh helper with get-fonts.py.
+  if [[ -f "$CARTO_DIR/scripts/get-fonts.py" ]]; then
+    as_user "$GIS_USER" bash -lc "cd '$CARTO_DIR' && python3 scripts/get-fonts.py" ||       warn "Font helper returned an error; continuing so the installer can finish."
   fi
 
-  if [[ -x "$CARTO_DIR/scripts/get-external-data.py" ]]; then
+  if [[ -f "$CARTO_DIR/scripts/get-external-data.py" ]]; then
     run mkdir -p "$CARTO_DIR/data"
     run chown -R "$GIS_USER:$GIS_USER" "$CARTO_DIR/data"
   fi
 
-  success "OpenStreetMap Carto ${CARTO_TAG} prepared."
+  success "OpenStreetMap Carto ${CARTO_TAG} flex style prepared."
 }
 
 configure_rendering() {
@@ -1451,10 +1457,20 @@ reset_gis_db() {
 import_render_db() {
   local pbf="${1:-}"
   [[ -n "$pbf" ]] || pbf=$(choose_local_pbf) || return
-  [[ -f "$CARTO_DIR/openstreetmap-carto.style" ]] || { error "Carto style missing. Run full software install first."; return 1; }
+
+  [[ -f "$CARTO_DIR/openstreetmap-carto-flex.lua" ]] || {
+    error "Carto v6 flex style missing. Run full software install first."
+    return 1
+  }
+
+  [[ -s "$pbf" ]] || {
+    error "OSM PBF is missing or empty: $pbf"
+    return 1
+  }
 
   banner
-  printf "%bRENDERING DATABASE IMPORT%b\nDataset: %s\n\n" "$BOLD$CYAN" "$RESET" "$pbf"
+  printf "%bRENDERING DATABASE IMPORT — CARTO v6 FLEX%b\nDataset: %s\n\n" "$BOLD$CYAN" "$RESET" "$pbf"
+
   read -rp "Recreate GIS database '$GIS_DB'? [y/N]: " yn
   [[ "$yn" =~ ^[Yy]$ ]] && reset_gis_db
 
@@ -1463,25 +1479,39 @@ import_render_db() {
   threads=$(nproc)
   ((threads > 8)) && threads=8
 
-  as_user "$GIS_USER" osm2pgsql -d "$GIS_DB" --create --slim -G --hstore \
-    --tag-transform-script "$CARTO_DIR/openstreetmap-carto.lua" \
-    -C "$cache" --number-processes "$threads" \
-    -S "$CARTO_DIR/openstreetmap-carto.style" "$pbf"
+  # OpenStreetMap Carto v6 uses osm2pgsql flex backend.
+  as_user "$GIS_USER" osm2pgsql \
+    -O flex \
+    -S "$CARTO_DIR/openstreetmap-carto-flex.lua" \
+    -d "$GIS_DB" \
+    --create \
+    -C "$cache" \
+    --number-processes "$threads" \
+    "$pbf"
 
-  [[ -f "$CARTO_DIR/indexes.sql" ]] && as_user "$GIS_USER" psql -d "$GIS_DB" -f "$CARTO_DIR/indexes.sql"
-  [[ -f "$CARTO_DIR/functions.sql" ]] && as_user "$GIS_USER" psql -d "$GIS_DB" -f "$CARTO_DIR/functions.sql"
-  if [[ -x "$CARTO_DIR/scripts/get-external-data.py" ]]; then
-    as_user "$GIS_USER" bash -lc "cd '$CARTO_DIR' && ./scripts/get-external-data.py"
+  # Required/official Carto v6 database objects.
+  [[ -f "$CARTO_DIR/indexes.sql" ]] &&     as_user "$GIS_USER" psql -v ON_ERROR_STOP=1 -d "$GIS_DB" -f "$CARTO_DIR/indexes.sql"
+
+  [[ -f "$CARTO_DIR/functions.sql" ]] &&     as_user "$GIS_USER" psql -v ON_ERROR_STOP=1 -d "$GIS_DB" -f "$CARTO_DIR/functions.sql"
+
+  [[ -f "$CARTO_DIR/common-values.sql" ]] &&     as_user "$GIS_USER" psql -v ON_ERROR_STOP=1 -d "$GIS_DB" -f "$CARTO_DIR/common-values.sql"
+
+  if [[ -f "$CARTO_DIR/scripts/get-external-data.py" ]]; then
+    run mkdir -p "$CARTO_DIR/data"
+    run chown -R "$GIS_USER:$GIS_USER" "$CARTO_DIR/data"
+    as_user "$GIS_USER" bash -lc "cd '$CARTO_DIR' && python3 scripts/get-external-data.py"
   fi
 
-  as_user "$GIS_USER" bash -lc "cd '$CARTO_DIR' && carto project.mml > mapnik.xml"
+  # Compile the v6 style for renderd/Mapnik.
+  as_user "$GIS_USER" bash -lc "cd '$CARTO_DIR' && carto -a '3.0.22' project.mml > mapnik.xml"
+
   run systemctl restart renderd apache2
 
-  # Initialise osm2pgsql replication information from the source file when possible.
   if command -v osm2pgsql-replication >/dev/null 2>&1; then
-    as_user "$GIS_USER" osm2pgsql-replication init -d "$GIS_DB" --osm-file "$pbf" || warn "Replication init failed; you can configure it later."
+    as_user "$GIS_USER" osm2pgsql-replication init -d "$GIS_DB" --osm-file "$pbf" ||       warn "Replication init failed; configure it later if needed."
   fi
-  success "Rendering import complete."
+
+  success "Rendering import complete using OpenStreetMap Carto v6 flex backend."
 }
 
 import_nominatim() {
