@@ -1,0 +1,1 @@
+# OpenStreetMap-Full-Stack-Installer-v1.0.0
