@@ -1,5 +1,7 @@
 # OpenStreetMap Full Stack Installer v1.0.0
 
+![Version](https://img.shields.io/badge/version-1.0.0-blue.svg) ![Ubuntu](https://img.shields.io/badge/Ubuntu-24.04%20LTS-orange.svg) ![Debian](https://img.shields.io/badge/Debian-13-red.svg) ![Bash](https://img.shields.io/badge/Bash-install.sh-green.svg)
+
 A single interactive `install.sh` for deploying a full self-hosted OpenStreetMap server stack on **Ubuntu Server 24.04 LTS** (primary target) with **Debian 13** as a best-effort target.
 
 The installer is intentionally verbose. It uses an ANSI terminal interface, a 12-stage installation progress bar, per-command logging, resumable large downloads, and dynamic country/region discovery from the official Geofabrik index.
@@ -9,7 +11,7 @@ The installer is intentionally verbose. It uses an ANSI terminal interface, a 12
 
 The installer builds a native, multi-service OpenStreetMap platform on one Linux host:
 
-\`\`\`text
+```text
                            +----------------------+
                            |      Web Browser     |
                            +----------+-----------+
@@ -40,7 +42,7 @@ The installer builds a native, multi-service OpenStreetMap platform on one Linux
                                   |    OSRM    |
                                   |  Routing   |
                                   +------------+
-\`\`\`
+```
 
 The included Leaflet portal uses the locally hosted services for map display, search, reverse geocoding, and routing.
 
@@ -58,7 +60,7 @@ The included Leaflet portal uses the locally hosted services for map display, se
 
 - Debian **13**, 64-bit, supported on a best-effort basis.
 
-The installer checks \`/etc/os-release\` before proceeding. Unsupported distributions are rejected.
+The installer checks `/etc/os-release` before proceeding. Unsupported distributions are rejected.
 
 This release is not intended for Windows, Windows Server, macOS, Alpine, RHEL, Rocky Linux, AlmaLinux, CentOS, or other distributions without adaptation.
 
@@ -66,16 +68,16 @@ This release is not intended for Windows, Windows Server, macOS, Alpine, RHEL, R
 
 You need:
 
-- a user with \`sudo\` privileges;
+- a user with `sudo` privileges;
 - root access during installation;
-- permission to install packages, create service accounts, create systemd units, modify Apache configuration, tune PostgreSQL, and create files under \`/srv\`, \`/var/www\`, \`/var/log\`, \`/etc\`, and \`/usr/local/sbin\`.
+- permission to install packages, create service accounts, create systemd units, modify Apache configuration, tune PostgreSQL, and create files under `/srv`, `/var/www`, `/var/log`, `/etc`, and `/usr/local/sbin`.
 
 Run the installer with:
 
-\`\`\`bash
+```bash
 chmod +x install.sh
 sudo ./install.sh
-\`\`\`
+```
 
 The script intentionally stops when it is not executed as root.
 
@@ -98,7 +100,7 @@ A disconnected/offline installation is not currently supported.
 
 The installer attempts to install all required packages automatically. The package set includes, when available on the selected OS:
 
-\`\`\`text
+```text
 ca-certificates curl wget aria2 jq pv rsync tar unzip bzip2 xz-utils gzip zip
 sudo less git screen tmux htop iotop sysstat net-tools dnsutils lsof tree
 dialog whiptail
@@ -116,7 +118,7 @@ postgresql-postgis postgresql-postgis-scripts
 osm2pgsql osmium-tool
 certbot python3-certbot-apache
 bc acl cron logrotate
-\`\`\`
+```
 
 The installer also installs the Carto compiler through npm.
 
@@ -150,7 +152,7 @@ Because this project can run **rendering, Nominatim, OSRM, Overpass and tile cac
 
 A full-stack system stores the same OpenStreetMap source data in multiple optimized forms:
 
-- the downloaded \`.osm.pbf\`;
+- the downloaded `.osm.pbf`;
 - PostgreSQL/PostGIS rendering tables;
 - Nominatim search database;
 - OSRM routing graph;
@@ -184,7 +186,7 @@ For small test systems a modest swap file is useful. For large-country and plane
 
 Rendering, imports, OSRM preprocessing, database indexing and source builds benefit from additional CPU cores.
 
-The installer uses \`nproc\` in several operations to take advantage of available CPUs.
+The installer uses `nproc` in several operations to take advantage of available CPUs.
 
 ### Network and firewall
 
@@ -200,8 +202,8 @@ Internal/local services:
 
 | Port / socket | Purpose |
 |---|---|
-| \`127.0.0.1:5000\` | OSRM backend, proxied by Apache |
-| \`/run/nominatim.sock\` | Nominatim Gunicorn Unix socket |
+| `127.0.0.1:5000` | OSRM backend, proxied by Apache |
+| `/run/nominatim.sock` | Nominatim Gunicorn Unix socket |
 | PostgreSQL local socket | PostgreSQL/PostGIS access |
 
 Do **not** expose PostgreSQL or OSRM port 5000 directly to the Internet unless you explicitly require it and have appropriate firewall/authentication controls.
@@ -219,22 +221,22 @@ For the integrated Let's Encrypt option you need:
 
 Example:
 
-\`\`\`text
+```text
 maps.example.com -> YOUR_SERVER_PUBLIC_IP
-\`\`\`
+```
 
 ### Recommended pre-flight checklist
 
 Before running a large import:
 
-\`\`\`bash
+```bash
 cat /etc/os-release
 nproc
 free -h
 df -h
 lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS
 ip addr
-\`\`\`
+```
 
 Confirm that:
 
@@ -266,11 +268,11 @@ Test this project first with a small Geofabrik extract before importing the full
 
 ## Repository layout
 
-\`\`\`text
+```text
 OpenStreetMap-Full-Stack-Installer-v1.0.0/
 ├── install.sh
 └── README.md
-\`\`\`
+```
 
 The project deliberately keeps deployment simple: the installer is self-contained and downloads/builds its runtime components as required.
 
@@ -278,20 +280,20 @@ The project deliberately keeps deployment simple: the installer is self-containe
 
 ## Quick start
 
-\`\`\`bash
+```bash
 git clone https://github.com/antonismor/OpenStreetMap-Full-Stack-Installer-v1.0.0.git
 cd OpenStreetMap-Full-Stack-Installer-v1.0.0
 chmod +x install.sh
 sudo ./install.sh
-\`\`\`
+```
 
 Recommended initial menu sequence:
 
-\`\`\`text
+```text
 1) FULL SOFTWARE INSTALL — all stack components
 2) Full Auto Country Deployment — download + import everywhere
 5) Health / service status
-\`\`\`
+```
 
 ---
 
