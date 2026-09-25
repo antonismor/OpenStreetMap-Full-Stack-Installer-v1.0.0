@@ -997,7 +997,8 @@ download_country_menu() {
       1|2)
         if [[ "$c" == "1" ]]; then select_row_interactive countries || continue; else select_row_interactive all || continue; fi
         row="$SELECTED_ROW"
-        IFS=$'\t' read -r name iso parent id url updates <<<"$row"        slug=$(sanitize_slug "$id")
+        IFS=$'\t' read -r name iso parent id url updates <<<"$row"
+        slug=$(sanitize_slug "$id")
         out="$DATA_DIR/${slug}-latest.osm.pbf"
         banner
         printf "%bSelected:%b %s (%s)\n" "$BOLD" "$RESET" "$name" "${iso:--}"
