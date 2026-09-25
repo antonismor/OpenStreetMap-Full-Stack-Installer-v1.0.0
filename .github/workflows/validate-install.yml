@@ -28,6 +28,9 @@ jobs:
           grep -q -- '-O flex' install.sh
           ! grep -q 'openstreetmap-carto.style' install.sh
           ! grep -q 'openstreetmap-carto.lua' install.sh
+          grep -q 'NOMINATIM_OSM2PGSQL_BINARY=' install.sh
+          grep -q 'NOMINATIM_DATABASE_DSN=pgsql:dbname=nominatim' install.sh
+          grep -q "cd '\$NOM_PROJECT'.*nominatim.*import" install.sh
 
       - name: Bash syntax
         shell: bash
