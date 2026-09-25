@@ -23,6 +23,11 @@ jobs:
           grep -q 'install_telemetry()' install.sh
           grep -q 'pip.*install.*osmium' install.sh
           ! grep -q 'pip.*install.*pyosmium' install.sh
+          grep -q 'openstreetmap-carto-flex.lua' install.sh
+          grep -q 'common-values.sql' install.sh
+          grep -q -- '-O flex' install.sh
+          ! grep -q 'openstreetmap-carto.style' install.sh
+          ! grep -q 'openstreetmap-carto.lua' install.sh
 
       - name: Bash syntax
         shell: bash
