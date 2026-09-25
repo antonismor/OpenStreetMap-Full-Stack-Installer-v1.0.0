@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # ============================================================================
 # OpenStreetMap Full Stack Installer
-# Version: 1.0.0
-# Target: Ubuntu Server 24.04 LTS (primary), Debian 13 (best effort)
+# Version: 2.1.0
+# Target: Debian 13 (primary), Ubuntu Server 24.04 LTS (secondary)
 # Components:
 #   - PostgreSQL + PostGIS
 #   - osm2pgsql + osmium-tool
@@ -27,7 +27,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="1.0.0"
+SCRIPT_VERSION="2.1.0"
 APP_NAME="OpenStreetMap Full Stack Installer"
 OSM_VERBOSE="${OSM_VERBOSE:-1}"
 
@@ -39,11 +39,16 @@ BACKUP_DIR="$BASE_DIR/backups"
 WEB_DIR="/var/www/html/osm"
 LOG_DIR="/var/log/osm-fullstack"
 LOG_FILE="$LOG_DIR/install-$(date +%Y%m%d-%H%M%S).log"
+APACHE_PORT="${OSM_APACHE_PORT:-8080}"
+TELEMETRY_USER="${OSM_TELEMETRY_USER:-osmtelemetry}"
+TELEMETRY_HOME="${OSM_TELEMETRY_HOME:-/opt/osm-telemetry}"
+TELEMETRY_PORT="${OSM_TELEMETRY_PORT:-9018}"
+TELEMETRY_DB="${OSM_TELEMETRY_DB:-osmtelemetry}"
 
 GIS_DB="${OSM_GIS_DB:-gis}"
 GIS_USER="${OSM_GIS_USER:-_renderd}"
 CARTO_DIR="$SRC_DIR/openstreetmap-carto"
-CARTO_TAG="${OSM_CARTO_TAG:-v5.9.0}"
+CARTO_TAG="${OSM_CARTO_TAG:-v6.0.0}"
 TILE_URI="${OSM_TILE_URI:-/tile/}"
 
 NOM_USER="nominatim"
@@ -67,7 +72,7 @@ GEOFABRIK_INDEX="https://download.geofabrik.de/index-v1.json"
 PLANET_PBF="https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf"
 PLANET_MD5="https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf.md5"
 
-TOTAL_STEPS=12
+TOTAL_STEPS=13
 CURRENT_STEP=0
 
 # ANSI colors
@@ -107,7 +112,7 @@ banner() {
 ART
   printf "%b\n" "$RESET"
   printf "%b%s v%s%b\n" "$WHITE$BOLD" "$APP_NAME" "$SCRIPT_VERSION" "$RESET"
-  printf "%bFull native OSM stack • ANSI UI • verbose logging • country menu%b\n" "$DIM" "$RESET"
+  printf "%bDebian 13 native OSM stack • Apache :%s backend for NPM • ANSI UI%b\n" "$DIM" "$APACHE_PORT" "$RESET"
   printf "%bLog: %s%b\n\n" "$DIM" "$LOG_FILE" "$RESET"
 }
 
@@ -179,12 +184,12 @@ load_os_release() {
   case "${ID:-}" in
     ubuntu)
       if [[ "${VERSION_ID:-}" != "24.04" ]]; then
-        warn "Primary tested target is Ubuntu 24.04 LTS; detected Ubuntu ${VERSION_ID:-unknown}."
+        warn "Secondary Ubuntu target is 24.04 LTS; detected Ubuntu ${VERSION_ID:-unknown}."
       fi
       ;;
     debian)
       if [[ "${VERSION_ID:-}" != "13" ]]; then
-        warn "Best-effort Debian target is Debian 13; detected Debian ${VERSION_ID:-unknown}."
+        warn "Primary tested Debian target is Debian 13; detected Debian ${VERSION_ID:-unknown}."
       fi
       ;;
     *)
@@ -224,25 +229,48 @@ apt_install_available() {
   fi
 }
 
+
+configure_apache_backend_port() {
+  info "Configuring Apache backend for Nginx Proxy Manager on TCP ${APACHE_PORT}..."
+
+  if [[ -f /etc/apache2/ports.conf && ! -f /etc/apache2/ports.conf.osm-original ]]; then
+    run cp -a /etc/apache2/ports.conf /etc/apache2/ports.conf.osm-original
+  fi
+  if [[ -f /etc/apache2/sites-available/000-default.conf && ! -f /etc/apache2/sites-available/000-default.conf.osm-original ]]; then
+    run cp -a /etc/apache2/sites-available/000-default.conf /etc/apache2/sites-available/000-default.conf.osm-original
+  fi
+
+  if grep -Eq '^[[:space:]]*Listen[[:space:]]+80([[:space:]]|$)' /etc/apache2/ports.conf; then
+    run sed -ri "s/^[[:space:]]*Listen[[:space:]]+80([[:space:]]*)$/Listen ${APACHE_PORT}\1/" /etc/apache2/ports.conf
+  elif ! grep -Eq "^[[:space:]]*Listen[[:space:]]+${APACHE_PORT}([[:space:]]|$)" /etc/apache2/ports.conf; then
+    printf '\nListen %s\n' "$APACHE_PORT" >> /etc/apache2/ports.conf
+  fi
+
+  if [[ -f /etc/apache2/sites-available/000-default.conf ]]; then
+    run sed -ri "s#<VirtualHost[[:space:]]+\*:80>#<VirtualHost *:${APACHE_PORT}>#g" /etc/apache2/sites-available/000-default.conf
+  fi
+
+  run apache2ctl configtest
+  run systemctl restart apache2
+  success "Apache backend ready on http://SERVER:${APACHE_PORT}/"
+}
+
 install_packages() {
   step_bar "System packages and build tools"
   run apt-get update
-  DEBIAN_FRONTEND=noninteractive run apt-get upgrade -y
-
   apt_install_available \
     ca-certificates curl wget aria2 jq pv rsync tar unzip bzip2 xz-utils gzip zip sudo less \
     git screen tmux htop iotop sysstat net-tools dnsutils lsof tree dialog whiptail \
     build-essential g++ gcc make cmake ninja-build pkg-config autoconf automake libtool \
     expat libexpat1-dev zlib1g-dev liblz4-dev libbz2-dev libxml2-dev libzip-dev \
     libboost-all-dev libtbb-dev libicu-dev libprotobuf-dev protobuf-compiler \
-    lua5.2 liblua5.2-dev \
+    lua5.1 liblua5.1-0-dev lua5.4 liblua5.4-dev \
     apache2 libapache2-mod-tile renderd \
     mapnik-utils python3-mapnik python3-psycopg2 python3-psycopg python3-yaml \
     python3 python3-dev python3-pip python3-venv virtualenv \
     gdal-bin npm node-carto \
     postgresql postgresql-contrib postgis postgresql-postgis postgresql-postgis-scripts \
     osm2pgsql osmium-tool \
-    certbot python3-certbot-apache \
     bc acl cron logrotate
 
   if apt-cache show osrm-backend >/dev/null 2>&1; then
@@ -250,6 +278,8 @@ install_packages() {
   fi
 
   run npm install -g carto
+  run systemctl enable --now apache2
+  configure_apache_backend_port
   success "Base packages installed."
 }
 
@@ -259,8 +289,9 @@ create_service_users() {
   id "$GIS_USER" >/dev/null 2>&1 || run useradd --system --user-group --home-dir "$BASE_DIR" --shell /usr/sbin/nologin "$GIS_USER"
   id "$NOM_USER" >/dev/null 2>&1 || run useradd --user-group -d "$NOM_HOME" -s /bin/bash -m "$NOM_USER"
   id "$OVERPASS_USER" >/dev/null 2>&1 || run useradd --user-group -d "$OVERPASS_ROOT" -s /bin/bash -m "$OVERPASS_USER"
+  id "$TELEMETRY_USER" >/dev/null 2>&1 || run useradd --system --user-group --home-dir "$TELEMETRY_HOME" --shell /usr/sbin/nologin "$TELEMETRY_USER"
 
-  run mkdir -p "$NOM_HOME" "$NOM_PROJECT" "$OVERPASS_ROOT" "$OVERPASS_DB" "$OVERPASS_DIFF" /var/cache/renderd/tiles
+  run mkdir -p "$NOM_HOME" "$NOM_PROJECT" "$OVERPASS_ROOT" "$OVERPASS_DB" "$OVERPASS_DIFF" "$TELEMETRY_HOME" "$BASE_DIR/updates" /var/cache/renderd/tiles
   run chown -R "$NOM_USER:$NOM_USER" "$NOM_HOME" "$NOM_PROJECT"
   run chown -R "$OVERPASS_USER:$OVERPASS_USER" "$OVERPASS_ROOT"
   run chown -R "$GIS_USER:$GIS_USER" /var/cache/renderd
@@ -589,6 +620,10 @@ install_overpass() {
   step_bar "Overpass API engine"
 
   run mkdir -p "$OVERPASS_ROOT" "$OVERPASS_DB" "$OVERPASS_DIFF" "$OVERPASS_EXEC"
+  if [[ -x "$OVERPASS_EXEC/bin/dispatcher" && -x "$OVERPASS_EXEC/bin/update_database" ]]; then
+    success "Overpass is already installed; keeping existing binaries."
+    return 0
+  fi
   run chown -R "$OVERPASS_USER:$OVERPASS_USER" "$OVERPASS_ROOT"
 
   if [[ ! -d "$OVERPASS_SRC" ]]; then
@@ -661,8 +696,8 @@ install_web_portal() {
   <button onclick="beginRoute()">Route: pick A → B</button><button onclick="clearRoute()">Clear route</button><br>
   <span class="muted">Right-click map = reverse geocode. Route uses local OSRM.</span><br>
   <a href="/nominatim-ui/" target="_blank">Nominatim UI</a>
-  <a href="/overpass/api/timestamp" target="_blank">Overpass timestamp</a>
-  <div id="status" class="status">Raster tiles • Nominatim • OSRM • Overpass</div>
+  <a href="/overpass/api/timestamp" target="_blank">Overpass timestamp</a>\n  <a href="/telemetry/" target="_blank">Live telemetry</a>
+  <div id="status" class="status">Raster tiles • Nominatim • OSRM • Overpass • Telemetry</div>
 </div>
 <div id="map"></div>
 <script src="/osm/vendor/leaflet.js"></script>
@@ -720,7 +755,167 @@ document.getElementById('q').addEventListener('keydown',e=>{if(e.key==='Enter')s
 EOF_WEB
 
   run chown -R www-data:www-data "$WEB_DIR"
-  success "Web portal: http://SERVER/osm/"
+  success "Web portal: http://SERVER:${APACHE_PORT}/osm/"
+}
+
+
+install_telemetry() {
+  step_bar "Live telemetry backend"
+
+  run mkdir -p "$TELEMETRY_HOME" /etc/osm-telemetry "$BASE_DIR/updates"
+
+  if ! sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='$TELEMETRY_USER'" | grep -q 1; then
+    run sudo -u postgres createuser "$TELEMETRY_USER"
+  fi
+  if ! sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='$TELEMETRY_DB'" | grep -q 1; then
+    run sudo -u postgres createdb -O "$TELEMETRY_USER" "$TELEMETRY_DB"
+  fi
+
+  if [[ ! -f /etc/osm-telemetry/token ]]; then
+    umask 077
+    openssl rand -hex 32 > /etc/osm-telemetry/token
+  fi
+
+  if [[ ! -x "$TELEMETRY_HOME/venv/bin/python" ]]; then
+    run python3 -m venv "$TELEMETRY_HOME/venv"
+  fi
+  run "$TELEMETRY_HOME/venv/bin/pip" install --upgrade pip wheel
+  run "$TELEMETRY_HOME/venv/bin/pip" install --upgrade fastapi "uvicorn[standard]" "psycopg[binary]"
+
+  cat > "$TELEMETRY_HOME/server.py" <<'PY_TELEMETRY'
+import os
+from datetime import datetime, timezone
+from typing import Optional
+import psycopg
+from fastapi import FastAPI, Header, HTTPException
+from fastapi.responses import HTMLResponse
+from pydantic import BaseModel, Field
+
+DB=os.environ["OSM_TELEMETRY_DB"]
+TOKEN=os.environ["OSM_TELEMETRY_TOKEN"]
+app=FastAPI(title="OpenStreetMap Live Telemetry",version="1.0.0")
+SCHEMA="""CREATE TABLE IF NOT EXISTS telemetry_points(
+ id BIGSERIAL PRIMARY KEY, device_id TEXT NOT NULL, display_name TEXT,
+ latitude DOUBLE PRECISION NOT NULL, longitude DOUBLE PRECISION NOT NULL,
+ accuracy_m DOUBLE PRECISION, altitude_m DOUBLE PRECISION,
+ speed_mps DOUBLE PRECISION, heading_deg DOUBLE PRECISION, battery_pct INTEGER,
+ recorded_at TIMESTAMPTZ NOT NULL, received_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+CREATE INDEX IF NOT EXISTS telemetry_device_time_idx
+ON telemetry_points(device_id,recorded_at DESC);"""
+
+def auth(v: Optional[str]):
+    if v != f"Bearer {TOKEN}": raise HTTPException(status_code=401,detail="Unauthorized")
+
+class Point(BaseModel):
+    device_id:str=Field(min_length=1,max_length=128)
+    display_name:Optional[str]=Field(default=None,max_length=128)
+    latitude:float=Field(ge=-90,le=90)
+    longitude:float=Field(ge=-180,le=180)
+    accuracy_m:Optional[float]=Field(default=None,ge=0)
+    altitude_m:Optional[float]=None
+    speed_mps:Optional[float]=Field(default=None,ge=0)
+    heading_deg:Optional[float]=Field(default=None,ge=0,le=360)
+    battery_pct:Optional[int]=Field(default=None,ge=0,le=100)
+    recorded_at:Optional[datetime]=None
+
+@app.on_event("startup")
+def startup():
+    with psycopg.connect(DB) as conn:
+        with conn.cursor() as cur: cur.execute(SCHEMA)
+        conn.commit()
+
+@app.get("/health")
+def health(): return {"status":"ok","time":datetime.now(timezone.utc).isoformat()}
+
+@app.post("/api/telemetry")
+def ingest(p:Point,authorization:Optional[str]=Header(default=None)):
+    auth(authorization); when=p.recorded_at or datetime.now(timezone.utc)
+    with psycopg.connect(DB) as conn:
+        with conn.cursor() as cur:
+            cur.execute("""INSERT INTO telemetry_points
+            (device_id,display_name,latitude,longitude,accuracy_m,altitude_m,speed_mps,heading_deg,battery_pct,recorded_at)
+            VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
+            (p.device_id,p.display_name,p.latitude,p.longitude,p.accuracy_m,p.altitude_m,p.speed_mps,p.heading_deg,p.battery_pct,when))
+            rid=cur.fetchone()[0]
+        conn.commit()
+    return {"ok":True,"id":rid}
+
+@app.get("/api/devices")
+def devices(authorization:Optional[str]=Header(default=None)):
+    auth(authorization)
+    with psycopg.connect(DB) as conn:
+        with conn.cursor() as cur:
+            cur.execute("""SELECT DISTINCT ON(device_id) device_id,COALESCE(display_name,device_id),
+            latitude,longitude,accuracy_m,battery_pct,recorded_at,received_at
+            FROM telemetry_points ORDER BY device_id,recorded_at DESC""")
+            rows=cur.fetchall()
+    return [{"device_id":r[0],"display_name":r[1],"latitude":r[2],"longitude":r[3],
+             "accuracy_m":r[4],"battery_pct":r[5],"recorded_at":r[6],"received_at":r[7]} for r in rows]
+
+@app.get("/",response_class=HTMLResponse)
+def page():
+    return """<!doctype html><html><head><meta charset="utf-8"><title>OSM Live Telemetry</title>
+<link rel="stylesheet" href="/osm/vendor/leaflet.css"><style>html,body,#map{height:100%;margin:0}
+#p{position:absolute;z-index:1000;top:12px;left:55px;background:#fff;padding:12px;border-radius:9px;font:14px Arial}</style>
+</head><body><div id="p"><b>OSM Live Telemetry</b><br><input id="t" type="password" placeholder="Telemetry token">
+<button onclick="load()">Refresh</button><span id="s"></span></div><div id="map"></div>
+<script src="/osm/vendor/leaflet.js"></script><script>
+const m=L.map('map').setView([38.5,23.7],6);L.tileLayer('/tile/{z}/{x}/{y}.png',{maxZoom:20,attribution:'© OpenStreetMap contributors'}).addTo(m);
+const ms={};async function load(){const t=document.getElementById('t').value;
+const r=await fetch('/telemetry/api/devices',{headers:{Authorization:'Bearer '+t}});
+if(!r.ok){document.getElementById('s').textContent=' auth/error';return;}const ds=await r.json();
+ds.forEach(d=>{const p=[d.latitude,d.longitude],x='<b>'+d.display_name+'</b><br>'+d.latitude+', '+d.longitude;
+if(ms[d.device_id])ms[d.device_id].setLatLng(p).bindPopup(x);else ms[d.device_id]=L.marker(p).addTo(m).bindPopup(x);});
+document.getElementById('s').textContent=' '+ds.length+' device(s)';}setInterval(load,10000);
+</script></body></html>"""
+PY_TELEMETRY
+
+  cat > /etc/osm-telemetry/env <<EOF_TELEMETRY_ENV
+OSM_TELEMETRY_DB=postgresql://$TELEMETRY_USER@/$TELEMETRY_DB
+OSM_TELEMETRY_TOKEN=$(cat /etc/osm-telemetry/token)
+EOF_TELEMETRY_ENV
+  run chmod 600 /etc/osm-telemetry/env
+  run chown -R "$TELEMETRY_USER:$TELEMETRY_USER" "$TELEMETRY_HOME"
+
+  cat > /etc/systemd/system/osm-telemetry.service <<EOF_TELEMETRY_SERVICE
+[Unit]
+Description=OpenStreetMap consent-based telemetry API
+After=network-online.target postgresql.service
+Wants=network-online.target
+[Service]
+Type=simple
+User=$TELEMETRY_USER
+Group=$TELEMETRY_USER
+WorkingDirectory=$TELEMETRY_HOME
+EnvironmentFile=/etc/osm-telemetry/env
+ExecStart=$TELEMETRY_HOME/venv/bin/uvicorn server:app --host 127.0.0.1 --port $TELEMETRY_PORT
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+[Install]
+WantedBy=multi-user.target
+EOF_TELEMETRY_SERVICE
+
+  cat > /etc/apache2/conf-available/osm-telemetry.conf <<EOF_TELEMETRY_APACHE
+ProxyPass        /telemetry/ http://127.0.0.1:$TELEMETRY_PORT/
+ProxyPassReverse /telemetry/ http://127.0.0.1:$TELEMETRY_PORT/
+EOF_TELEMETRY_APACHE
+  run a2enmod proxy proxy_http headers
+  run a2enconf osm-telemetry
+  run systemctl daemon-reload
+  run systemctl enable --now osm-telemetry.service
+  run apache2ctl configtest
+  run systemctl restart apache2
+
+  cat > "$BASE_DIR/updates/telemetry-agent-manifest.example.json" <<'EOF_TELEMETRY_MANIFEST'
+{"product":"OpenStreetMapTelemetryClient","channel":"final","version":"1.0.0",
+"package":"OpenStreetMapTelemetryClient.apk","sha256":"REPLACE_WITH_SIGNED_APK_SHA256",
+"rollback":true,"privacy":"Device-owner consent and Android location permissions are required."}
+EOF_TELEMETRY_MANIFEST
+
+  success "Telemetry: http://SERVER:${APACHE_PORT}/telemetry/"
+  success "Telemetry token: /etc/osm-telemetry/token"
 }
 
 setup_housekeeping() {
@@ -747,6 +942,8 @@ tar -czf "\$OUT" \
   /etc/apache2/conf-available/osm-fullstack.conf \
   /etc/systemd/system/nominatim.service \
   /etc/systemd/system/nominatim.socket \
+  /etc/systemd/system/osm-telemetry.service \
+  /etc/osm-telemetry \
   "$NOM_PROJECT" 2>/dev/null || true
 find "$BACKUP_DIR" -type f -name 'config-*.tar.gz' -mtime +30 -delete
 printf 'Backup: %s\n' "\$OUT"
@@ -777,6 +974,7 @@ check_service renderd
 check_service nominatim.socket
 systemctl list-unit-files | grep -q '^osrm\.service' && check_service osrm || true
 systemctl list-unit-files | grep -q '^overpass' && check_service overpass-dispatcher || true
+systemctl list-unit-files | grep -q '^osm-telemetry\.service' && check_service osm-telemetry || true
 if systemctl is-active --quiet overpass-dispatcher 2>/dev/null; then
   printf "%-30s" "Overpass HTTP API"
   if curl -fsS --max-time 5 'http://127.0.0.1/overpass/api/timestamp' >/dev/null 2>&1; then
@@ -785,8 +983,9 @@ if systemctl is-active --quiet overpass-dispatcher 2>/dev/null; then
     printf "\033[33mNOT READY\033[0m\n"
   fi
 fi
-check_port 80
+check_port 8080
 check_port 5000
+check_port 9018
 printf '\nDisk:\n'; df -h /srv/osm 2>/dev/null || true
 printf '\nData files:\n'; find /srv/osm/data -maxdepth 1 -type f -printf '%f  %s bytes\n' 2>/dev/null | sort || true
 EOF_HEALTH
@@ -800,10 +999,12 @@ finish_full_install() {
   run apache2ctl configtest
   run systemctl restart apache2
   run systemctl enable --now renderd || true
-  success "Software stack installation finished. Data still needs to be downloaded/imported."
+  success "Software stack installation finished. Apache backend: http://SERVER:${APACHE_PORT}/"
+  success "Use Nginx Proxy Manager for public 80/443 and TLS."
 }
 
 full_install() {
+  TOTAL_STEPS=13
   CURRENT_STEP=0
   banner
   hardware_report
@@ -820,6 +1021,7 @@ full_install() {
   install_osrm
   install_overpass
   install_web_portal
+  install_telemetry
   setup_housekeeping
   setup_health_command
   finish_full_install
@@ -979,6 +1181,578 @@ download_all_countries() {
     download_url "$url" "$out"
   done < <(country_rows "$idx")
   success "All $total Geofabrik ISO country extracts have been processed."
+}
+
+
+download_greece_dataset() {
+  refresh_geofabrik_index
+  local idx="$REFRESHED_INDEX"
+  local row name iso parent id url updates slug out
+  row=$(country_rows "$idx" | awk -F'\t' '$2 ~ /(^|,)GR(,|$)/ {print; exit}')
+  [[ -n "$row" ]] || { error "Greece was not found in the Geofabrik index."; return 1; }
+  IFS=  while true; do
+    local row name iso parent id url updates slug out c
+    banner
+    printf "%bCOUNTRY / REGION DOWNLOAD MANAGER%b\n\n" "$BOLD$CYAN" "$RESET"
+    printf "  1) Countries only (ISO-3166 list)\n"
+    printf "  2) All Geofabrik extracts (countries, states, regions)\n"
+    printf "  3) City/custom-area extract from existing PBF\n"
+    printf "  4) Download ALL country extracts (very large)\n"
+    printf "  5) Download full planet PBF\n"
+    printf "  6) Show downloaded datasets\n"
+    printf "  0) Back\n\n"
+    read -rp "Selection: " c
+    case "$c" in
+      1|2)
+        if [[ "$c" == "1" ]]; then select_row_interactive countries || continue; else select_row_interactive all || continue; fi
+        row="$SELECTED_ROW"
+        IFS=$'\t' read -r name iso parent id url updates <<<"$row"
+        slug=$(sanitize_slug "$id")
+        out="$DATA_DIR/${slug}-latest.osm.pbf"
+        banner
+        printf "%bSelected:%b %s (%s)\n" "$BOLD" "$RESET" "$name" "${iso:--}"
+        printf "%bURL:%b      %s\n" "$BOLD" "$RESET" "$url"
+        printf "%bUpdates:%b  %s\n" "$BOLD" "$RESET" "${updates:-not-advertised}"
+        printf "%bTarget:%b   %s\n\n" "$BOLD" "$RESET" "$out"
+        download_url "$url" "$out"
+        printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$slug" "$out" "$url" "$updates" > "$STATE_DIR/last-dataset.tsv"
+        pause
+        ;;
+      3) extract_city_bbox ;;
+      4) download_all_countries; pause ;;
+      5) download_planet; pause ;;
+      6) banner; find "$DATA_DIR" -maxdepth 1 -type f -printf '%TY-%Tm-%Td %TH:%TM  %10s  %f\n' | sort; pause ;;
+      0) return ;;
+      *) warn "Invalid selection." ;;
+    esac
+  done
+}
+
+download_planet() {
+  banner
+  printf "%bWARNING:%b Full-planet PBF is extremely large and downstream imports can require hundreds of GB to >1 TB.\n" "$YELLOW$BOLD" "$RESET"
+  read -rp "Type PLANET to continue: " confirm
+  [[ "$confirm" == "PLANET" ]] || { warn "Cancelled."; return; }
+  local out="$DATA_DIR/planet-latest.osm.pbf"
+  download_url "$PLANET_PBF" "$out"
+  run curl -fL --retry 4 --progress-bar -o "$out.md5" "$PLANET_MD5"
+  (cd "$DATA_DIR" && md5sum -c "$(basename "$out").md5") || warn "Planet MD5 check failed; verify manually."
+  printf 'Planet\tplanet\t%s\t%s\t%s\n' "$out" "$PLANET_PBF" "https://planet.openstreetmap.org/replication/minute/" > "$STATE_DIR/last-dataset.tsv"
+}
+
+choose_local_pbf() {
+  local -a files
+  mapfile -t files < <(find "$DATA_DIR" -maxdepth 1 -type f -name '*.osm.pbf' | sort)
+  if ((${#files[@]} == 0)); then
+    warn "No .osm.pbf files found in $DATA_DIR"
+    return 1
+  fi
+  printf "\nAvailable datasets:\n" >&2
+  local i=1 f
+  for f in "${files[@]}"; do
+    printf "%3d) %-55s %8s\n" "$i" "$(basename "$f")" "$(du -h "$f" | awk '{print $1}')" >&2
+    ((i++))
+  done
+  local choice
+  read -rp "Select dataset: " choice
+  [[ "$choice" =~ ^[0-9]+$ ]] && ((choice>=1 && choice<=${#files[@]})) || return 1
+  printf '%s\n' "${files[$((choice-1))]}"
+}
+
+osm_cache_mb() {
+  local mem_mb cache
+  mem_mb=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
+  cache=$((mem_mb * 2 / 3))
+  ((cache < 512)) && cache=512
+  ((cache > 32768)) && cache=32768
+  printf '%s\n' "$cache"
+}
+
+reset_gis_db() {
+  info "Resetting rendering database '$GIS_DB'..."
+  run systemctl stop renderd || true
+  run sudo -u postgres dropdb --if-exists "$GIS_DB"
+  run sudo -u postgres createdb -E UTF8 -O "$GIS_USER" "$GIS_DB"
+  run sudo -u postgres psql -d "$GIS_DB" -c "CREATE EXTENSION postgis; CREATE EXTENSION hstore;"
+}
+
+import_render_db() {
+  local pbf="${1:-}"
+  [[ -n "$pbf" ]] || pbf=$(choose_local_pbf) || return
+  [[ -f "$CARTO_DIR/openstreetmap-carto.style" ]] || { error "Carto style missing. Run full software install first."; return 1; }
+
+  banner
+  printf "%bRENDERING DATABASE IMPORT%b\nDataset: %s\n\n" "$BOLD$CYAN" "$RESET" "$pbf"
+  read -rp "Recreate GIS database '$GIS_DB'? [y/N]: " yn
+  [[ "$yn" =~ ^[Yy]$ ]] && reset_gis_db
+
+  local cache threads
+  cache=$(osm_cache_mb)
+  threads=$(nproc)
+  ((threads > 8)) && threads=8
+
+  as_user "$GIS_USER" osm2pgsql -d "$GIS_DB" --create --slim -G --hstore \
+    --tag-transform-script "$CARTO_DIR/openstreetmap-carto.lua" \
+    -C "$cache" --number-processes "$threads" \
+    -S "$CARTO_DIR/openstreetmap-carto.style" "$pbf"
+
+  [[ -f "$CARTO_DIR/indexes.sql" ]] && as_user "$GIS_USER" psql -d "$GIS_DB" -f "$CARTO_DIR/indexes.sql"
+  [[ -f "$CARTO_DIR/functions.sql" ]] && as_user "$GIS_USER" psql -d "$GIS_DB" -f "$CARTO_DIR/functions.sql"
+  if [[ -x "$CARTO_DIR/scripts/get-external-data.py" ]]; then
+    as_user "$GIS_USER" bash -lc "cd '$CARTO_DIR' && ./scripts/get-external-data.py"
+  fi
+
+  as_user "$GIS_USER" bash -lc "cd '$CARTO_DIR' && carto project.mml > mapnik.xml"
+  run systemctl restart renderd apache2
+
+  # Initialise osm2pgsql replication information from the source file when possible.
+  if command -v osm2pgsql-replication >/dev/null 2>&1; then
+    as_user "$GIS_USER" osm2pgsql-replication init -d "$GIS_DB" --osm-file "$pbf" || warn "Replication init failed; you can configure it later."
+  fi
+  success "Rendering import complete."
+}
+
+import_nominatim() {
+  local pbf="${1:-}"
+  [[ -n "$pbf" ]] || pbf=$(choose_local_pbf) || return
+  [[ -x "$NOM_VENV/bin/nominatim" ]] || { error "Nominatim is not installed. Run full software install first."; return 1; }
+
+  banner
+  printf "%bNOMINATIM IMPORT%b\nDataset: %s\n\n" "$BOLD$CYAN" "$RESET" "$pbf"
+  read -rp "Drop an existing 'nominatim' database before import? [y/N]: " yn
+  if [[ "$yn" =~ ^[Yy]$ ]]; then
+    run systemctl stop nominatim.service || true
+    run sudo -u postgres dropdb --if-exists nominatim
+  fi
+
+  run chown -R "$NOM_USER:$NOM_USER" "$NOM_PROJECT"
+  as_user "$NOM_USER" "$NOM_VENV/bin/nominatim" import --project-dir "$NOM_PROJECT" --osm-file "$pbf"
+
+  # The API runs as www-data. Grant read/query access explicitly so Apache/
+  # Gunicorn does not hit PostgreSQL "insufficient permissions" errors.
+  if ! sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='www-data'" | grep -q 1; then
+    run sudo -u postgres createuser www-data
+  fi
+  run sudo -u postgres psql -d nominatim -v ON_ERROR_STOP=1 -c 'GRANT CONNECT ON DATABASE nominatim TO "www-data";'
+  run sudo -u postgres psql -d nominatim -v ON_ERROR_STOP=1 -c 'GRANT USAGE ON SCHEMA public TO "www-data";'
+  run sudo -u postgres psql -d nominatim -v ON_ERROR_STOP=1 -c 'GRANT SELECT ON ALL TABLES IN SCHEMA public TO "www-data";'
+  run sudo -u postgres psql -d nominatim -v ON_ERROR_STOP=1 -c 'GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO "www-data";' || true
+  run sudo -u postgres psql -d nominatim -v ON_ERROR_STOP=1 -c 'GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO "www-data";' || true
+
+  run systemctl daemon-reload
+  run systemctl enable --now nominatim.socket nominatim.service
+  success "Nominatim import complete. Endpoint: /nominatim/search and /nominatim/reverse"
+}
+
+osrm_profile_path() {
+  local profile
+  for profile in \
+    /usr/share/osrm/profiles/car.lua \
+    /usr/local/share/osrm/profiles/car.lua \
+    "$OSRM_SRC/profiles/car.lua"; do
+    [[ -f "$profile" ]] && { printf '%s\n' "$profile"; return 0; }
+  done
+  return 1
+}
+
+import_osrm() {
+  local pbf="${1:-}"
+  [[ -n "$pbf" ]] || pbf=$(choose_local_pbf) || return
+  command -v osrm-extract >/dev/null 2>&1 || { error "OSRM is not installed."; return 1; }
+
+  local slug profile target base
+  slug=$(sanitize_slug "$(basename "$pbf" .osm.pbf)")
+  profile=$(osrm_profile_path) || { error "Could not find OSRM car.lua profile."; return 1; }
+  target="$OSRM_DATA/$slug"
+  run mkdir -p "$target"
+  run cp -f "$pbf" "$target/input.osm.pbf"
+
+  banner
+  printf "%bOSRM ROUTING IMPORT%b\nDataset: %s\nProfile: %s\n\n" "$BOLD$CYAN" "$RESET" "$pbf" "$profile"
+  (
+    cd "$target"
+    run osrm-extract -p "$profile" input.osm.pbf
+    run osrm-partition input.osrm
+    run osrm-customize input.osrm
+  )
+  base="$target/input.osrm"
+
+  cat > /etc/systemd/system/osrm.service <<EOF_OSRM_SERVICE
+[Unit]
+Description=OSRM routing server
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=$(command -v osrm-routed) --algorithm mld --port $OSRM_PORT $base
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+EOF_OSRM_SERVICE
+  run systemctl daemon-reload
+  run systemctl enable --now osrm.service
+  success "OSRM routing active through /route/ (Apache proxy) and localhost:$OSRM_PORT."
+}
+
+import_overpass() {
+  local pbf="${1:-}"
+  [[ -n "$pbf" ]] || pbf=$(choose_local_pbf) || return
+  [[ -x "$OVERPASS_EXEC/bin/update_database" ]] || { error "Overpass is not installed."; return 1; }
+
+  local xmlbz2="$OVERPASS_ROOT/import.osm.bz2"
+  banner
+  printf "%bOVERPASS DATABASE IMPORT%b\nDataset: %s\n\n" "$BOLD$CYAN" "$RESET" "$pbf"
+  warn "Overpass uses its own database format. The PBF will be streamed to OSM XML and bzip2-compressed first."
+  read -rp "Erase existing Overpass DB? [y/N]: " yn
+  if [[ "$yn" =~ ^[Yy]$ ]]; then
+    run systemctl stop overpass-dispatcher overpass-areas overpass-rules 2>/dev/null || true
+    run rm -rf "$OVERPASS_DB"
+    run mkdir -p "$OVERPASS_DB"
+    run chown -R "$OVERPASS_USER:$OVERPASS_USER" "$OVERPASS_DB"
+  fi
+
+  info "Converting PBF -> OSM XML.bz2 (streaming, verbose)..."
+  as_user "$OVERPASS_USER" bash -lc "osmium cat '$pbf' -f osm | pv | bzip2 -c > '$xmlbz2'"
+  as_user "$OVERPASS_USER" "$OVERPASS_EXEC/bin/init_osm3s.sh" "$xmlbz2" "$OVERPASS_DB" "$OVERPASS_EXEC"
+
+  [[ -d "$OVERPASS_SRC/build-src/rules" ]] && {
+    run rm -rf "$OVERPASS_DB/rules"
+    run cp -a "$OVERPASS_SRC/build-src/rules" "$OVERPASS_DB/rules"
+    run chown -R "$OVERPASS_USER:$OVERPASS_USER" "$OVERPASS_DB/rules"
+  }
+
+  configure_overpass_services
+  run apache2ctl configtest
+  run systemctl reload apache2
+  success "Overpass database imported. HTTP API: /overpass/api/interpreter ; CLI: sudo -u overpass $OVERPASS_EXEC/bin/osm3s_query --db-dir=$OVERPASS_DB"
+}
+
+configure_overpass_services() {
+  cat > /etc/systemd/system/overpass-dispatcher.service <<EOF_OP_DISPATCH
+[Unit]
+Description=Overpass API OSM dispatcher
+After=network.target
+
+[Service]
+Type=simple
+User=$OVERPASS_USER
+Group=$OVERPASS_USER
+ExecStart=$OVERPASS_EXEC/bin/dispatcher --osm-base --db-dir=$OVERPASS_DB --allow-duplicate-queries=yes
+ExecStop=$OVERPASS_EXEC/bin/dispatcher --terminate
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF_OP_DISPATCH
+
+  cat > /etc/systemd/system/overpass-areas.service <<EOF_OP_AREAS
+[Unit]
+Description=Overpass API areas dispatcher
+After=overpass-dispatcher.service
+
+[Service]
+Type=simple
+User=$OVERPASS_USER
+Group=$OVERPASS_USER
+ExecStart=$OVERPASS_EXEC/bin/dispatcher --areas --db-dir=$OVERPASS_DB --allow-duplicate-queries=yes
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF_OP_AREAS
+
+  cat > /etc/systemd/system/overpass-rules.service <<EOF_OP_RULES
+[Unit]
+Description=Overpass API area rules processor
+After=overpass-areas.service
+
+[Service]
+Type=simple
+User=$OVERPASS_USER
+Group=$OVERPASS_USER
+Nice=19
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+ExecStart=$OVERPASS_EXEC/bin/rules_delta_loop.sh $OVERPASS_DB
+Restart=on-failure
+RestartSec=20
+
+[Install]
+WantedBy=multi-user.target
+EOF_OP_RULES
+
+  run systemctl daemon-reload
+  run systemctl enable --now overpass-dispatcher.service
+  sleep 2
+  run chmod 666 "$OVERPASS_DB"/osm3s_* 2>/dev/null || true
+  run systemctl enable --now overpass-areas.service overpass-rules.service || warn "Area services may need the base dispatcher to finish startup first."
+}
+
+setup_replication_timer() {
+  banner
+  if ! command -v osm2pgsql-replication >/dev/null 2>&1; then
+    error "osm2pgsql-replication is not installed by the packaged osm2pgsql version."
+    return 1
+  fi
+
+  local pbf
+  pbf=$(choose_local_pbf) || return
+  as_user "$GIS_USER" osm2pgsql-replication init -d "$GIS_DB" --osm-file "$pbf"
+
+  cat > /etc/systemd/system/osm2pgsql-update.service <<EOF_REPL_SVC
+[Unit]
+Description=Update OpenStreetMap rendering database
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=$GIS_USER
+Group=$GIS_USER
+ExecStart=$(command -v osm2pgsql-replication) update -d $GIS_DB -- --number-processes $(nproc) -C $(osm_cache_mb)
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+EOF_REPL_SVC
+
+  cat > /etc/systemd/system/osm2pgsql-update.timer <<'EOF_REPL_TIMER'
+[Unit]
+Description=Run OSM replication update every 5 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF_REPL_TIMER
+
+  run systemctl daemon-reload
+  run systemctl enable --now osm2pgsql-update.timer
+  success "Rendering replication timer enabled every 5 minutes."
+  pause
+}
+
+stack_prereqs_ready() {
+  local missing=0
+  command -v osm2pgsql >/dev/null 2>&1 || { warn "Missing osm2pgsql"; missing=1; }
+  [[ -x "$NOM_VENV/bin/nominatim" ]] || { warn "Missing Nominatim"; missing=1; }
+  command -v osrm-extract >/dev/null 2>&1 || { warn "Missing OSRM"; missing=1; }
+  [[ -x "$OVERPASS_EXEC/bin/update_database" ]] || { warn "Missing Overpass API"; missing=1; }
+  [[ -f "$CARTO_DIR/openstreetmap-carto.style" ]] || { warn "Missing OpenStreetMap Carto"; missing=1; }
+  if ((missing)); then
+    error "Full software stack is not installed yet. Run main menu option 1 first."
+    return 1
+  fi
+}
+
+full_auto_country_deployment() {
+  stack_prereqs_ready || { pause; return; }
+  local row name iso parent id url updates slug pbf
+  select_row_interactive countries || return
+  row="$SELECTED_ROW"
+  IFS=$'\t' read -r name iso parent id url updates <<<"$row"
+  slug=$(sanitize_slug "$id")
+  pbf="$DATA_DIR/${slug}-latest.osm.pbf"
+
+  banner
+  printf "%bFULL AUTO COUNTRY DEPLOYMENT%b\n\n" "$BOLD$CYAN" "$RESET"
+  printf "Country: %s (%s)\nDataset: %s\n\n" "$name" "$iso" "$pbf"
+  printf "This will deploy:\n"
+  printf "  • Raster rendering DB + Mapnik/mod_tile\n"
+  printf "  • Nominatim geocoding/reverse geocoding\n"
+  printf "  • OSRM car routing\n"
+  printf "  • Overpass local query database\n"
+  printf "  • Leaflet portal and health services\n\n"
+  read -rp "Type DEPLOY to continue: " confirm
+  [[ "$confirm" == "DEPLOY" ]] || { warn "Cancelled."; return; }
+
+  [[ -f "$pbf" ]] || download_url "$url" "$pbf"
+  printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$slug" "$pbf" "$url" "$updates" > "$STATE_DIR/last-dataset.tsv"
+
+  import_render_db "$pbf"
+  import_nominatim "$pbf"
+  import_osrm "$pbf"
+  import_overpass "$pbf"
+
+  success "Full country deployment completed for $name."
+  pause
+}
+
+ssl_menu() {
+  banner
+  printf "%bAPACHE HTTPS / LET'S ENCRYPT%b\n\n" "$BOLD$CYAN" "$RESET"
+  read -rp "Public DNS name pointing to this server (example: maps.example.com): " domain
+  [[ -n "$domain" ]] || return
+  read -rp "Email for Let's Encrypt notices: " email
+  [[ -n "$email" ]] || return
+  run certbot --apache -d "$domain" --non-interactive --agree-tos -m "$email" --redirect
+  success "HTTPS enabled for $domain"
+  pause
+}
+
+
+npm_backend_info() {
+  banner
+  printf "%bNGINX PROXY MANAGER BACKEND%b\n\n" "$BOLD$CYAN" "$RESET"
+  printf "Scheme:       http\nForward Host: this VM's LAN IP\nForward Port: %s\n\n" "$APACHE_PORT"
+  printf "Endpoints:\n  /osm/\n  /tile/\n  /nominatim/\n  /route/\n  /overpass/api/\n  /telemetry/\n\n"
+  printf "Public 80/443 and TLS stay on Nginx Proxy Manager.\n"
+  pause
+}
+
+health_screen() {
+  banner
+  if command -v osm-health >/dev/null 2>&1; then
+    osm-health
+  else
+    warn "Health helper not installed yet."
+    systemctl --no-pager --full status postgresql apache2 renderd 2>/dev/null || true
+  fi
+  printf "\n%bRecent renderd logs:%b\n" "$BOLD" "$RESET"
+  journalctl -u renderd -n 15 --no-pager 2>/dev/null || true
+  pause
+}
+
+advanced_menu() {
+  while true; do
+    banner
+    printf "%bADVANCED / MAINTENANCE%b\n\n" "$BOLD$CYAN" "$RESET"
+    printf "  1) Import selected PBF -> Rendering DB\n"
+    printf "  2) Import selected PBF -> Nominatim\n"
+    printf "  3) Import selected PBF -> OSRM\n"
+    printf "  4) Import selected PBF -> Overpass\n"
+    printf "  5) Configure rendering replication timer\n"
+    printf "  6) Show Nginx Proxy Manager backend settings\n"
+    printf "  7) Backup configuration now\n"
+    printf "  8) Restart all installed services\n"
+    printf "  0) Back\n\n"
+    read -rp "Selection: " c
+    case "$c" in
+      1) import_render_db; pause ;;
+      2) import_nominatim; pause ;;
+      3) import_osrm; pause ;;
+      4) import_overpass; pause ;;
+      5) setup_replication_timer ;;
+      6) npm_backend_info ;;
+      7) /usr/local/sbin/osm-backup-configs.sh 2>/dev/null || warn "Backup helper not installed."; pause ;;
+      8)
+        for s in postgresql apache2 renderd nominatim.socket nominatim.service osrm.service overpass-dispatcher.service overpass-areas.service overpass-rules.service osm-telemetry.service; do
+          systemctl list-unit-files | grep -q "^${s}" && run systemctl restart "$s" || true
+        done
+        success "Installed services restarted."; pause ;;
+      0) return ;;
+      *) warn "Invalid selection." ;;
+    esac
+  done
+}
+
+main_menu() {
+  require_root
+  load_os_release
+  ensure_dirs
+
+  while true; do
+    banner
+    hardware_report
+    printf "\n%bMAIN MENU%b\n\n" "$BOLD$CYAN" "$RESET"
+    printf "  %b1)%b FULL SOFTWARE INSTALL — all components, no dataset import\n" "$GREEN" "$RESET"
+    printf "  %b2)%b FULL GREECE DEPLOYMENT — fresh VM, everything + Greece\n" "$GREEN" "$RESET"
+    printf "  3) Full Auto Country Deployment — selected country + all imports\n"
+    printf "  4) Maps / Country / Region / City / Planet manager\n"
+    printf "  5) Advanced imports / updates / NPM / maintenance\n"
+    printf "  6) Health / service status\n"
+    printf "  7) Show installer log\n"
+    printf "  8) Toggle verbose / quiet\n"
+    printf "  0) Exit\n\n"
+    read -rp "Selection: " choice
+    case "$choice" in
+      1) full_install ;;
+      2) full_greece_deployment ;;
+      3) full_auto_country_deployment ;;
+      4) download_country_menu ;;
+      5) advanced_menu ;;
+      6) health_screen ;;
+      7) less +G "$LOG_FILE" ;;
+      8) if [[ "$OSM_VERBOSE" == "1" ]]; then OSM_VERBOSE=0; else OSM_VERBOSE=1; fi ;;
+      0) banner; printf "%bBye.%b\n" "$GREEN" "$RESET"; exit 0 ;;
+      *) warn "Invalid selection."; sleep 1 ;;
+    esac
+  done
+}
+
+main_menu "$@"
+\t' read -r name iso parent id url updates <<<"$row"
+  slug=$(sanitize_slug "$id")
+  out="$DATA_DIR/${slug}-latest.osm.pbf"
+  download_url "$url" "$out"
+  printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$slug" "$out" "$url" "$updates" > "$STATE_DIR/last-dataset.tsv"
+  GREECE_PBF="$out"
+}
+
+extract_city_bbox() {
+  banner
+  printf "%bCITY / CUSTOM AREA EXTRACT%b\n\n" "$BOLD$CYAN" "$RESET"
+  printf "Create a smaller PBF from an existing downloaded dataset.\nBBox: west,south,east,north\n\n"
+  local source name bbox slug out
+  source=$(choose_local_pbf) || return
+  read -rp "Area/city name: " name
+  read -rp "Bounding box: " bbox
+  [[ -n "$name" && -n "$bbox" ]] || return
+  slug=$(sanitize_slug "$name")
+  out="$DATA_DIR/${slug}.osm.pbf"
+  run osmium extract --overwrite --strategy=complete_ways --bbox "$bbox" "$source" -o "$out"
+  success "Custom extract created: $out"
+  pause
+}
+
+full_greece_deployment() {
+  require_root
+  load_os_release
+  ensure_dirs
+  TOTAL_STEPS=18
+  CURRENT_STEP=0
+  banner
+  hardware_report
+  printf "\n%bFULL GREECE DEPLOYMENT%b\n" "$BOLD$CYAN" "$RESET"
+  printf "Fresh VM: software + Greece + rendering + Nominatim + OSRM + Overpass + telemetry.\n"
+  read -rp "Type GREECE to continue: " confirm
+  [[ "$confirm" == "GREECE" ]] || { warn "Cancelled."; TOTAL_STEPS=13; return; }
+
+  install_packages
+  create_service_users
+  setup_postgres
+  install_carto
+  configure_rendering
+  install_nominatim
+  install_osrm
+  install_overpass
+  install_web_portal
+  install_telemetry
+  setup_housekeeping
+  setup_health_command
+
+  step_bar "Download Greece dataset"
+  download_greece_dataset
+  step_bar "Import Greece -> rendering"
+  import_render_db "$GREECE_PBF"
+  step_bar "Import Greece -> Nominatim"
+  import_nominatim "$GREECE_PBF"
+  step_bar "Import Greece -> OSRM"
+  import_osrm "$GREECE_PBF"
+  step_bar "Import Greece -> Overpass"
+  import_overpass "$GREECE_PBF"
+  finish_full_install
+  TOTAL_STEPS=13
+  success "Full Greece deployment completed."
+  pause
 }
 
 download_country_menu() {
