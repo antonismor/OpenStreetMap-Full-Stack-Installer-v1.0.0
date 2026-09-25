@@ -27,7 +27,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="2.1.4"
+SCRIPT_VERSION="2.1.5"
 APP_NAME="OpenStreetMap Full Stack Installer"
 OSM_VERBOSE="${OSM_VERBOSE:-1}"
 
@@ -443,7 +443,9 @@ ProxyPass        /route/ http://127.0.0.1:5000/
 ProxyPassReverse /route/ http://127.0.0.1:5000/
 
 # Overpass API CGI endpoints: interpreter, timestamp, status, kill_my_queries.
+# Keep both the project-prefixed endpoint and the conventional /api/ endpoint.
 ScriptAlias /overpass/api/ /srv/overpass/app/cgi-bin/
+ScriptAlias /api/ /srv/overpass/app/cgi-bin/
 <Directory /srv/overpass/app/cgi-bin>
     AllowOverride None
     Options +ExecCGI -MultiViews +SymLinksIfOwnerMatch
@@ -653,9 +655,15 @@ install_overpass() {
   step_bar "Overpass API engine"
 
   run mkdir -p "$OVERPASS_ROOT" "$OVERPASS_DB" "$OVERPASS_DIFF" "$OVERPASS_EXEC"
-  if [[ -x "$OVERPASS_EXEC/bin/dispatcher" && -x "$OVERPASS_EXEC/bin/update_database" ]]; then
-    success "Overpass is already installed; keeping existing binaries."
+  if [[ -x "$OVERPASS_EXEC/bin/dispatcher" \
+     && -x "$OVERPASS_EXEC/bin/update_database" \
+     && -x "$OVERPASS_EXEC/cgi-bin/interpreter" \
+     && -x "$OVERPASS_EXEC/cgi-bin/timestamp" ]]; then
+    success "Overpass is already installed and CGI endpoints are complete; keeping existing binaries."
     return 0
+  fi
+  if [[ -x "$OVERPASS_EXEC/bin/dispatcher" || -x "$OVERPASS_EXEC/bin/update_database" ]]; then
+    warn "Existing Overpass installation is incomplete (missing CGI/runtime files); rebuilding it safely."
   fi
   run chown -R "$OVERPASS_USER:$OVERPASS_USER" "$OVERPASS_ROOT"
 
@@ -688,6 +696,11 @@ install_overpass() {
   fi
   run chown -R "$OVERPASS_USER:$OVERPASS_USER" "$OVERPASS_EXEC"
   run chmod -R a+rX "$OVERPASS_EXEC/bin" "$OVERPASS_EXEC/cgi-bin"
+  for cgi in interpreter timestamp status kill_my_queries; do
+    [[ -f "$OVERPASS_EXEC/cgi-bin/$cgi" ]] && run chmod 755 "$OVERPASS_EXEC/cgi-bin/$cgi"
+  done
+  [[ -x "$OVERPASS_EXEC/cgi-bin/interpreter" ]] || { error "Overpass CGI interpreter was not installed."; return 1; }
+  [[ -x "$OVERPASS_EXEC/cgi-bin/timestamp" ]] || { error "Overpass CGI timestamp endpoint was not installed."; return 1; }
 
   # Keep rules for area generation.
   if [[ -d "$OVERPASS_SRC/build-src/rules" ]]; then
@@ -997,6 +1010,7 @@ setup_health_command() {
 #!/usr/bin/env bash
 set -u
 G='\033[32m'; R='\033[31m'; Y='\033[33m'; Z='\033[0m'
+APACHE_PORT="@@APACHE_PORT@@"
 check_service(){ if systemctl is-active --quiet "$1"; then printf "${G}[UP]${Z}   %-22s\n" "$1"; else printf "${R}[DOWN]${Z} %-22s\n" "$1"; fi; }
 check_port(){ if ss -lntup 2>/dev/null | grep -q ":$1 "; then printf "${G}[LISTEN]${Z} port %s\n" "$1"; else printf "${Y}[CLOSED]${Z} port %s\n" "$1"; fi; }
 echo "OpenStreetMap Full Stack Health"
@@ -1010,7 +1024,7 @@ systemctl list-unit-files | grep -q '^overpass' && check_service overpass-dispat
 systemctl list-unit-files | grep -q '^osm-telemetry\.service' && check_service osm-telemetry || true
 if systemctl is-active --quiet overpass-dispatcher 2>/dev/null; then
   printf "%-30s" "Overpass HTTP API"
-  if curl -fsS --max-time 5 'http://127.0.0.1/overpass/api/timestamp' >/dev/null 2>&1; then
+  if curl -fsS --max-time 8 "http://127.0.0.1:${APACHE_PORT}/overpass/api/timestamp" >/dev/null 2>&1; then
     printf "\033[32mOK\033[0m\n"
   else
     printf "\033[33mNOT READY\033[0m\n"
@@ -1022,6 +1036,7 @@ check_port 9018
 printf '\nDisk:\n'; df -h /srv/osm 2>/dev/null || true
 printf '\nData files:\n'; find /srv/osm/data -maxdepth 1 -type f -printf '%f  %s bytes\n' 2>/dev/null | sort || true
 EOF_HEALTH
+  run sed -i "s|@@APACHE_PORT@@|$APACHE_PORT|g" /usr/local/sbin/osm-health
   run chmod +x /usr/local/sbin/osm-health
   success "Health command installed: osm-health"
 }
