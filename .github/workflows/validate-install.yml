@@ -21,6 +21,8 @@ jobs:
           grep -Eq 'SCRIPT_VERSION="[0-9]+\.[0-9]+\.[0-9]+"' install.sh
           grep -q 'full_greece_deployment()' install.sh
           grep -q 'install_telemetry()' install.sh
+          grep -q 'pip.*install.*osmium' install.sh
+          ! grep -q 'pip.*install.*pyosmium' install.sh
 
       - name: Bash syntax
         shell: bash
