@@ -1030,7 +1030,7 @@ if systemctl is-active --quiet overpass-dispatcher 2>/dev/null; then
     printf "\033[33mNOT READY\033[0m\n"
   fi
 fi
-check_port 8080
+check_port "$APACHE_PORT"
 check_port 5000
 check_port 9018
 printf '\nDisk:\n'; df -h /srv/osm 2>/dev/null || true
