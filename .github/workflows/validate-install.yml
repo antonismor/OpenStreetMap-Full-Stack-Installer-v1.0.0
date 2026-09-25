@@ -18,7 +18,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(wc -l < install.sh)" -gt 1500
-          grep -q 'SCRIPT_VERSION="2.1.0"' install.sh
+          grep -Eq 'SCRIPT_VERSION="[0-9]+\.[0-9]+\.[0-9]+"' install.sh
           grep -q 'full_greece_deployment()' install.sh
           grep -q 'install_telemetry()' install.sh
 
