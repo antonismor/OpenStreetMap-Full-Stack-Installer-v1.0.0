@@ -1,8 +1,8 @@
-# OpenStreetMap Full Stack Installer v1.0.0
+# OpenStreetMap Full Stack Installer v2.1.5
 
-![Version](https://img.shields.io/badge/version-1.0.0-blue.svg) ![Ubuntu](https://img.shields.io/badge/Ubuntu-24.04%20LTS-orange.svg) ![Debian](https://img.shields.io/badge/Debian-13-red.svg) ![Bash](https://img.shields.io/badge/Bash-install.sh-green.svg)
+![Version](https://img.shields.io/badge/version-2.1.5-blue.svg) ![Ubuntu](https://img.shields.io/badge/Ubuntu-24.04%20LTS-orange.svg) ![Debian](https://img.shields.io/badge/Debian-13-red.svg) ![Bash](https://img.shields.io/badge/Bash-install.sh-green.svg)
 
-A single interactive `install.sh` for deploying a full self-hosted OpenStreetMap server stack on **Ubuntu Server 24.04 LTS** (primary target) with **Debian 13** as a best-effort target.
+A single interactive `install.sh` for deploying a full self-hosted OpenStreetMap server stack on **Debian 13** (primary target) with **Ubuntu Server 24.04 LTS** as a secondary target.
 
 The installer is intentionally verbose. It uses an ANSI terminal interface, a 12-stage installation progress bar, per-command logging, resumable large downloads, and dynamic country/region discovery from the official Geofabrik index.
 
