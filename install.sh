@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================================
 # OpenStreetMap Full Stack Installer
-# Version: 2.1.0
+# Version: 2.1.1
 # Target: Debian 13 (primary), Ubuntu Server 24.04 LTS (secondary)
 # Components:
 #   - PostgreSQL + PostGIS
@@ -27,7 +27,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="2.1.0"
+SCRIPT_VERSION="2.1.1"
 APP_NAME="OpenStreetMap Full Stack Installer"
 OSM_VERBOSE="${OSM_VERBOSE:-1}"
 
@@ -350,13 +350,21 @@ tune_postgres() {
 
 install_carto() {
   step_bar "OpenStreetMap Carto / Mapnik style"
+
   if [[ ! -d "$CARTO_DIR/.git" ]]; then
+    run rm -rf "$CARTO_DIR"
     run git clone https://github.com/openstreetmap-carto/openstreetmap-carto.git "$CARTO_DIR"
   fi
-  run git -C "$CARTO_DIR" fetch --all --tags --prune
-  run git -C "$CARTO_DIR" checkout --detach "$CARTO_TAG"
 
+  # The Carto source tree is intentionally owned by the render user because
+  # the style compiler and external-data helpers run under that account.
+  # Always fix ownership BEFORE invoking git on reruns; otherwise root sees a
+  # repository owned by _renderd and Git aborts with "dubious ownership".
   run chown -R "$GIS_USER:$GIS_USER" "$CARTO_DIR"
+
+  as_user "$GIS_USER" git -C "$CARTO_DIR" fetch --all --tags --prune
+  as_user "$GIS_USER" git -C "$CARTO_DIR" checkout --detach "$CARTO_TAG"
+
   as_user "$GIS_USER" bash -lc "cd '$CARTO_DIR' && carto project.mml > mapnik.xml"
 
   if [[ -x "$CARTO_DIR/scripts/get-fonts.sh" ]]; then
