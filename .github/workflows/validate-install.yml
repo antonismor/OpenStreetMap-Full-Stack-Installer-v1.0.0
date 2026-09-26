@@ -31,6 +31,9 @@ jobs:
           grep -q 'NOMINATIM_OSM2PGSQL_BINARY=' install.sh
           grep -q 'NOMINATIM_DATABASE_DSN=pgsql:dbname=nominatim' install.sh
           grep -q "cd '\$NOM_PROJECT'.*nominatim.*import" install.sh
+          grep -q 'prepare_pbf_access()' install.sh
+          grep -q 'chmod 0644 "\$pbf"' install.sh
+          grep -q -- '--slim' install.sh
 
       - name: Bash syntax
         shell: bash
