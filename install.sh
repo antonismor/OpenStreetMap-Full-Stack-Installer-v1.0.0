@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================================
 # OpenStreetMap Full Stack Installer
-# Version: 2.1.5
+# Version: 2.1.6
 # Target: Debian 13 (primary), Ubuntu Server 24.04 LTS (secondary)
 # Components:
 #   - PostgreSQL + PostGIS
@@ -27,7 +27,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="2.1.5"
+SCRIPT_VERSION="2.1.6"
 APP_NAME="OpenStreetMap Full Stack Installer"
 OSM_VERBOSE="${OSM_VERBOSE:-1}"
 
@@ -1124,6 +1124,33 @@ sanitize_slug() {
   printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9._-]+/-/g; s/^-+|-+$//g'
 }
 
+prepare_pbf_access() {
+  local pbf="$1"
+  local service_user="${2:-}"
+
+  [[ -s "$pbf" ]] || {
+    error "OSM PBF is missing or empty: $pbf"
+    return 1
+  }
+
+  # OSM extract files are public data and are consumed by several isolated
+  # service accounts (_renderd, nominatim, overpass). Keep the data tree
+  # traversable and PBF files read-only for non-owner users.
+  run chmod 0755 "$BASE_DIR" "$DATA_DIR"
+  run chmod 0644 "$pbf"
+
+  if [[ -n "$service_user" ]]; then
+    id "$service_user" >/dev/null 2>&1 || {
+      error "Required service user does not exist: $service_user"
+      return 1
+    }
+    if ! sudo -H -u "$service_user" -- test -r "$pbf"; then
+      error "Service user '$service_user' cannot read dataset: $pbf"
+      return 1
+    fi
+  fi
+}
+
 download_url() {
   local url="$1" out="$2"
   run mkdir -p "$(dirname "$out")"
@@ -1136,6 +1163,7 @@ download_url() {
   else
     run curl -fL --retry 6 --retry-delay 3 -C - --progress-bar -o "$out" "$url"
   fi
+  prepare_pbf_access "$out"
   success "Downloaded $(du -h "$out" | awk '{print $1}') -> $out"
 }
 
@@ -1497,10 +1525,7 @@ import_render_db() {
     return 1
   }
 
-  [[ -s "$pbf" ]] || {
-    error "OSM PBF is missing or empty: $pbf"
-    return 1
-  }
+  prepare_pbf_access "$pbf" "$GIS_USER"
 
   banner
   printf "%bRENDERING DATABASE IMPORT — CARTO v6 FLEX%b\nDataset: %s\n\n" "$BOLD$CYAN" "$RESET" "$pbf"
@@ -1519,6 +1544,7 @@ import_render_db() {
     -S "$CARTO_DIR/openstreetmap-carto-flex.lua" \
     -d "$GIS_DB" \
     --create \
+    --slim \
     -C "$cache" \
     --number-processes "$threads" \
     "$pbf"
@@ -1552,6 +1578,7 @@ import_nominatim() {
   local pbf="${1:-}"
   [[ -n "$pbf" ]] || pbf=$(choose_local_pbf) || return
   [[ -x "$NOM_VENV/bin/nominatim" ]] || { error "Nominatim is not installed. Run full software install first."; return 1; }
+  prepare_pbf_access "$pbf" "$NOM_USER"
 
   banner
   printf "%bNOMINATIM IMPORT%b\nDataset: %s\n\n" "$BOLD$CYAN" "$RESET" "$pbf"
@@ -1615,6 +1642,7 @@ import_osrm() {
   local pbf="${1:-}"
   [[ -n "$pbf" ]] || pbf=$(choose_local_pbf) || return
   command -v osrm-extract >/dev/null 2>&1 || { error "OSRM is not installed."; return 1; }
+  prepare_pbf_access "$pbf"
 
   local slug profile target base
   slug=$(sanitize_slug "$(basename "$pbf" .osm.pbf)")
@@ -1657,6 +1685,7 @@ import_overpass() {
   local pbf="${1:-}"
   [[ -n "$pbf" ]] || pbf=$(choose_local_pbf) || return
   [[ -x "$OVERPASS_EXEC/bin/update_database" ]] || { error "Overpass is not installed."; return 1; }
+  prepare_pbf_access "$pbf" "$OVERPASS_USER"
 
   local xmlbz2="$OVERPASS_ROOT/import.osm.bz2"
   banner
