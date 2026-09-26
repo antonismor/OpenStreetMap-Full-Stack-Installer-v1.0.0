@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================================
 # OpenStreetMap Full Stack Installer
-# Version: 2.1.4
+# Version: 2.1.5
 # Target: Debian 13 (primary), Ubuntu Server 24.04 LTS (secondary)
 # Components:
 #   - PostgreSQL + PostGIS
